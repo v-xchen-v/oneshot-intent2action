@@ -25,13 +25,12 @@ Usage Examples:
         --object_name "red mug" \\
         --output_mask_path ./testcase/0_mask.png
     
-    # Optional: Visualize overlay
-    python obj_mask.py \\
-        --frame_path ./testcase/color/0.png \\
-        --object_name "red mug" \\
-        --bbox_xywh "100,150,200,300" \\
-        --output_mask_path ./testcase/0_mask.png \\
+    # Optional: Visualize overlay, add:
         --output_overlay_path ./testcase/0_overlay.png
+        
+    # Optional: Specify mask_id if first one is not your target object, add:
+        --mask_id 1
+        starts from 0 for the highest scored mask.
 """
 
 import torch
@@ -41,7 +40,11 @@ from typing import List
 
 
 def inference(inputs, model, processor, threshold=0.5, mask_threshold=0.5):
-    """Run SAM3 inference and post-process results."""
+    """Run SAM3 inference and post-process results.
+    
+    Returns:
+        tuple: (masks, scores) - masks sorted by scores in descending order
+    """
     with torch.no_grad():
         outputs = model(**inputs)
     
@@ -52,12 +55,27 @@ def inference(inputs, model, processor, threshold=0.5, mask_threshold=0.5):
         target_sizes=inputs.get("original_sizes").tolist()
     )[0]
     
-    print(f"Found {len(results['masks'])} objects")
-    return results['masks']
+    # Sort masks by scores descending
+    if "scores" in results:
+        scores = results["scores"]
+        sorted_indices = torch.argsort(scores, descending=True)
+        results["masks"] = results["masks"][sorted_indices]
+        results["boxes"] = results["boxes"][sorted_indices]
+        results["scores"] = results["scores"][sorted_indices]
+    else:
+        # If no scores, create dummy scores
+        scores = torch.ones(len(results["masks"]))
+    
+    print(f"Found {len(results['masks'])} objects with scores: {results['scores'].tolist()}")
+    return results['masks'], results['scores']
 
 
 def gen_obj_mask_bbox(processor, model, image: Image.Image, box_xyxy: List[int], device: torch.device):
-    """Generate mask using bounding box only."""
+    """Generate mask using bounding box only.
+    
+    Returns:
+        tuple: (masks, scores)
+    """
     inputs = processor(
         images=image,
         input_boxes=[[box_xyxy]],
@@ -69,7 +87,11 @@ def gen_obj_mask_bbox(processor, model, image: Image.Image, box_xyxy: List[int],
 
 
 def gen_obj_mask_text(processor, model, image: Image.Image, text: str, device: torch.device):
-    """Generate mask using text description only."""
+    """Generate mask using text description only.
+    
+    Returns:
+        tuple: (masks, scores)
+    """
     inputs = processor(
         images=image,
         text=text,
@@ -80,7 +102,11 @@ def gen_obj_mask_text(processor, model, image: Image.Image, text: str, device: t
 
 
 def gen_obj_mask_bbox_text(processor, model, image: Image.Image, box_xyxy: List[int], text: str, device: torch.device):
-    """Generate mask using both bounding box and text description."""
+    """Generate mask using both bounding box and text description.
+    
+    Returns:
+        tuple: (masks, scores)
+    """
     inputs = processor(
         images=image,
         input_boxes=[[box_xyxy]],
@@ -147,13 +173,21 @@ def main():
         "--output_mask_path",
         type=str,
         required=True,
-        help="Path to save output binary mask image (PNG)"
+        help="Path to save output masks and overlays"
     )
+
     parser.add_argument(
         "--output_overlay_path",
         type=str,
         default=None,
         help="Path to save overlay visualization (optional)"
+    )
+    
+    parser.add_argument(
+        "--mask_id",
+        type=int,
+        default=0,
+        help="Index of the mask to save if multiple masks are generated (default: 0)"
     )
 
     args = parser.parse_args()
@@ -192,35 +226,35 @@ def main():
         print(f"  Mode: Text + Bounding Box")
         print(f"  Text: '{args.object_name}'")
         print(f"  Bbox: {box_xyxy}")
-        masks = gen_obj_mask_bbox_text(processor, model, image, box_xyxy, args.object_name, device)
+        masks, scores = gen_obj_mask_bbox_text(processor, model, image, box_xyxy, args.object_name, device)
     elif box_xyxy:
         print(f"  Mode: Bounding Box Only")
         print(f"  Bbox: {box_xyxy}")
-        masks = gen_obj_mask_bbox(processor, model, image, box_xyxy, device)
+        masks, scores = gen_obj_mask_bbox(processor, model, image, box_xyxy, device)
     elif args.object_name:
         print(f"  Mode: Text Only")
         print(f"  Text: '{args.object_name}'")
-        masks = gen_obj_mask_text(processor, model, image, args.object_name, device)
+        masks, scores = gen_obj_mask_text(processor, model, image, args.object_name, device)
 
-    # Extract first mask
+    # Filter masks with score > 0.5
     if len(masks) == 0:
         print("WARNING: No masks generated!")
         return
     
-    mask = masks[0].cpu().numpy()  # Take the first/best mask
-    print(f"Selected mask shape: {mask.shape}")
-    
-    # Save binary mask
+    mask_id = args.mask_id
+    mask = masks[mask_id].cpu().numpy()
+    score = scores[mask_id].item()
+    mask_filename = args.output_mask_path
     mask_image = Image.fromarray((mask * 255).astype(np.uint8))
-    mask_image.save(args.output_mask_path)
-    print(f"\n✓ Saved mask to: {args.output_mask_path}")
+    mask_image.save(mask_filename)
+    print(f"✓ Saved mask (id={mask_id}, score={score:.3f}) to: {mask_filename}")
     
     # Save overlay visualization if requested
     if args.output_overlay_path:
-        overlay_image = overlay_masks(image, masks[:1])  # Overlay first mask only
+        # Overlay all valid masks
+        overlay_image = overlay_masks(image, masks[mask_id:mask_id+1])
         overlay_image.save(args.output_overlay_path)
-        print(f"✓ Saved overlay to: {args.output_overlay_path}")
-
+        print(f"\n✓ Saved overlay with {len(masks)} masks to: {args.output_overlay_path}")
 
 if __name__ == "__main__":
     main()

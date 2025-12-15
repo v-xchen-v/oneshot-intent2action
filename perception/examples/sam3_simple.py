@@ -12,17 +12,17 @@ processor = Sam3Processor.from_pretrained("facebook/sam3")
 image_url = "http://images.cocodataset.org/val2017/000000077595.jpg"
 image = Image.open(requests.get(image_url, stream=True).raw).convert("RGB")
 
-# Segment using bounding box prompt
-box_xyxy = [100, 150, 500, 450]
-input_boxes = [[box_xyxy]]  # [batch, num_boxes, 4]
-input_boxes_labels = [[1]]  # 1 = positive box
+# # Segment using bounding box prompt
+# box_xyxy = [100, 150, 500, 450]
+# input_boxes = [[box_xyxy]]  # [batch, num_boxes, 4]
+# input_boxes_labels = [[1]]  # 1 = positive box
 
-inputs = processor(
-    images=image,
-    input_boxes=input_boxes,
-    input_boxes_labels=input_boxes_labels,
-    return_tensors="pt"
-).to(device)
+# inputs = processor(
+#     images=image,
+#     input_boxes=input_boxes,
+#     input_boxes_labels=input_boxes_labels,
+#     return_tensors="pt"
+# ).to(device)
 
     
 # # Segment using text prompt
@@ -39,6 +39,18 @@ inputs = processor(
 #     text="cat",
 #     return_tensors="pt"
 # ).to(device)
+
+# Segment with bounding box and text prompt
+box_xyxy = [100, 150, 500, 450]
+input_boxes = [[box_xyxy]]  # [batch, num_boxes, 4]
+input_boxes_labels = [[1]]  # 1 = positive box
+inputs = processor(
+    images=image,
+    input_boxes=input_boxes,
+    input_boxes_labels=input_boxes_labels,
+    text="cat",
+    return_tensors="pt"
+).to(device)
 
 with torch.no_grad():
     outputs = model(**inputs)
@@ -58,6 +70,14 @@ print(f"Found {len(results['masks'])} objects")
 # - scores: Confidence scores
 
 
+# sort masks by scores descending
+if "scores" in results:
+    scores = results["scores"]
+    sorted_indices = torch.argsort(scores, descending=True)
+    results["masks"] = results["masks"][sorted_indices]
+    results["boxes"] = results["boxes"][sorted_indices]
+    results["scores"] = results["scores"][sorted_indices]
+        
 # Save masks as images
 for i, mask in enumerate(results["masks"]):
     mask_image = Image.fromarray((mask.cpu().numpy() * 255).astype("uint8"))
