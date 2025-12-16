@@ -101,6 +101,55 @@ The generated mesh files can then be used in your intent-to-action pipeline for 
 
 For detailed setup and usage, refer to the [official SAM 3D Objects setup guide](https://github.com/facebookresearch/sam-3d-objects).
 
+### 3D Mesh Generation WebAPI
+
+**Generate 3D meshes from RGB images using a REST API**
+
+The Mesh Generation WebAPI combines SAM3 (for object segmentation) and SAM3D (for 3D reconstruction) to generate high-quality 3D mesh files from single RGB images.
+
+**Key Features:**
+- Generate 3D meshes (PLY/STL) from RGB images with text or bounding box prompts
+- Scale meshes to real-world dimensions and convert formats
+- REST API for easy integration with any language or platform
+- Remote GPU processing for resource-intensive 3D reconstruction
+
+**Quick Start**
+
+1. **Activate the conda environment**:
+```bash
+conda activate sam3d-objects
+```
+
+2. **Install dependencies**:
+```bash
+pip install -r perception/webapi/requirements_mesh.txt
+```
+
+3. **Start the API server**:
+```bash
+# Using the start script (recommended)
+./perception/webapi/start_mesh_api.sh
+
+# Or with custom options
+./perception/webapi/start_mesh_api.sh --port 5001 --debug
+```
+
+4. **Test the API**:
+```bash
+# Basic test
+./perception/tests/test_webapi_mesh.sh
+
+# Test mesh processing
+./perception/tests/test_webapi_mesh.sh --test-process-mesh --ply-file output.ply
+```
+
+**API Endpoints:**
+- `POST /api/generate_mesh` - Generate 3D mesh from image with text/bbox prompts
+- `POST /api/process_mesh` - Scale PLY mesh to real dimensions and convert to STL
+- `GET /health` - Check API server status
+
+For detailed API documentation, see [perception/webapi/README.md](perception/webapi/README.md).
+
 ### 6D Pose Tracking with FoundationPose WebAPI
 
 **Why We Created the WebAPI**
