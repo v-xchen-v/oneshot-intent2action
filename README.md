@@ -46,15 +46,21 @@ pip install -e .
 cd ../..
 ```
 
-### Purpose of SAM 3D Objects
+### Purpose of External Libraries
 
-This repository integrates [SAM 3D Objects](https://github.com/facebookresearch/sam-3d-objects) as a submodule to:
+This repository integrates external libraries as submodules:
 
+**[SAM 3D Objects](https://github.com/facebookresearch/sam-3d-objects)**
 - **Generate 3D mesh files (.stl format)** from 2D images
 - Provide 3D object understanding for intent-to-action workflows
 - Enable spatial reasoning and manipulation planning
 
 The SAM 3D Objects model takes input images and produces high-quality 3D mesh representations in .stl file format, which is required by FoundationPose for 6D object pose estimation. These mesh files can be used for downstream robotic tasks, scene understanding, and action planning.
+
+**[FoundationPose](https://github.com/teal024/FoundationPose-plus-plus)**
+- **Track real-time 3D object pose** for dynamic scenes
+- Provide 6D pose estimation for robotic manipulation
+- Enable continuous pose tracking during object interaction
 
 ## Usage
 
