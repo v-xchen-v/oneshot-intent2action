@@ -22,5 +22,5 @@ echo "Press Ctrl+C to stop"
 echo ""
 
 # Run the API server
-cd "$PROJECT_ROOT"
+cd /root/workspace/main
 python3 perception/webapi/pose_tracking_api.py --host "$HOST" --port "$PORT"

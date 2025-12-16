@@ -246,7 +246,8 @@ def create_session():
         
         # Ensure we're using the correct CUDA device and set default tensor type
         if torch.cuda.is_available():
-            torch.cuda.set_device(0)
+            CUDA_DEVICE = int(os.environ.get('CUDA_DEVICE', '0'))
+            torch.cuda.set_device(CUDA_DEVICE)
             torch.cuda.empty_cache()
         
         # Set default tensor type to CUDA to ensure all tensors are created on GPU
