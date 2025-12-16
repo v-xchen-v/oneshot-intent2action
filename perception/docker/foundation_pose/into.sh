@@ -1,0 +1,1 @@
+sudo docker exec -it foundation_pose bash

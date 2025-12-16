@@ -1,0 +1,1 @@
+sudo docker pull shingarey/foundationpose_custom_cuda121:latest
