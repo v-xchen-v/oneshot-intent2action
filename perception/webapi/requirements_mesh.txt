@@ -1,0 +1,5 @@
+flask
+flask-cors
+requests
+open3d
+numpy
