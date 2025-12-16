@@ -4,8 +4,8 @@ Client script to generate 3D mesh from RealSense camera using webapi.
 
 This script:
 1. Captures RGB-D frames from RealSense camera
-2. Gets object mask (from SAM or manual input)
-3. Sends data to mesh generation webapi
+2. Gets object bbox and optional text prompt (or loads existing mask)
+3. Sends data to mesh generation webapi (API handles SAM3/SAM3D)
 4. Downloads generated mesh file
 
 Usage Examples:
@@ -18,8 +18,8 @@ Usage Examples:
     # Use existing mask file
     python gen_mesh.py --mask path/to/mask.png --output model.ply
 
-    # Specify API server and object description
-    python gen_mesh.py --api-url http://10.150.240.101:5000 --prompt "toy bear" --output model.ply
+    # Specify API server and object description (mesh API runs on port 5001)
+    python gen_mesh.py --api-url http://10.150.240.101:5001 --prompt "black mug" --output model.ply
 
     # Custom camera resolution with prompt
     python gen_mesh.py --width 1280 --height 720 --prompt "cup" --output model.ply
@@ -31,214 +31,120 @@ Usage Examples:
 import pyrealsense2 as rs
 import numpy as np
 import cv2
-import requests
-import base64
-import json
 import argparse
 import sys
+import os
+import base64
+import tempfile
 from pathlib import Path
 from typing import Optional, Tuple, List
-import io
 from PIL import Image
-import torch
+
+# Add perception/webapi to path to import mesh client
+project_root = Path(__file__).parent.parent.parent.parent
+webapi_path = project_root / "perception" / "webapi"
+if str(webapi_path) not in sys.path:
+    sys.path.insert(0, str(webapi_path))
+
+# Import the mesh generation client functions
+from mesh_client_example import generate_mesh, encode_image_file
 
 
 class MeshGenerationClient:
-    """Client for mesh generation webapi"""
+    """Wrapper for mesh generation client"""
     
-    def __init__(self, api_url: str = "http://localhost:5000"):
+    def __init__(self, api_url: str = "http://localhost:5001"):
         self.api_url = api_url
         self._check_health()
     
     def _check_health(self):
         """Check if the API server is available"""
+        import requests
         try:
-            response = requests.get(f"{self.api_url}/api/health", timeout=5)
+            response = requests.get(f"{self.api_url}/health", timeout=5)
             if response.status_code == 200:
-                print(f"✓ Connected to API server: {self.api_url}")
+                health_data = response.json()
+                print(f"✓ Connected to mesh generation API: {self.api_url}")
+                print(f"  Device: {health_data.get('device', 'unknown')}")
+                print(f"  Models loaded: {health_data.get('models_loaded', False)}")
                 return True
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"✗ Cannot connect to API server: {self.api_url}")
             print(f"  Error: {e}")
-            print(f"\n  Make sure the webapi server is running:")
-            print(f"  cd perception/webapi && ./start_api.sh")
+            print(f"\n  Make sure the mesh generation API is running:")
+            print(f"  cd perception/webapi && ./start_mesh_api.sh")
             sys.exit(1)
     
-    def encode_image(self, image: np.ndarray, format: str = 'PNG') -> str:
-        """Encode numpy array to base64 string"""
-        if image.dtype != np.uint8 and image.dtype != np.uint16:
-            if image.dtype in [np.float32, np.float64]:
-                image = (image * 255).astype(np.uint8)
-        
-        pil_img = Image.fromarray(image)
-        buffer = io.BytesIO()
-        pil_img.save(buffer, format=format)
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
-    
-    def generate_mesh(
-        self,
-        rgb: np.ndarray,
-        mask: np.ndarray,
-        depth: Optional[np.ndarray] = None
-    ) -> bytes:
-        """
-        Generate mesh from RGB image and mask
-        
-        Args:
-            rgb: RGB image (H, W, 3)
-            mask: Binary mask (H, W) or (H, W, 1)
-            depth: Optional depth map (H, W)
-        
-        Returns:
-            PLY file content as bytes
-        """
-        print("\n📤 Sending data to mesh generation API...")
-        
-        # Prepare mask
-        if len(mask.shape) == 3:
-            mask = mask[:, :, 0]
-        mask_uint8 = (mask > 0).astype(np.uint8) * 255
-        
-        payload = {
-            'rgb': self.encode_image(rgb),
-            'mask': self.encode_image(mask_uint8)
-        }
-        
-        if depth is not None:
-            payload['depth'] = self.encode_image(depth)
-        
-        try:
-            response = requests.post(
-                f"{self.api_url}/api/mesh/generate",
-                json=payload,
-                timeout=300  # 5 minutes timeout for mesh generation
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                # Decode mesh file from base64
-                mesh_b64 = result.get('mesh_file')
-                if not mesh_b64:
-                    raise ValueError("No mesh file in response")
-                
-                mesh_bytes = base64.b64decode(mesh_b64)
-                
-                print(f"✓ Mesh generated successfully")
-                print(f"  Points: {result.get('point_count', 'N/A')}")
-                print(f"  Size: {len(mesh_bytes) / 1024:.2f} KB")
-                
-                return mesh_bytes
-            else:
-                error_msg = response.json().get('error', 'Unknown error')
-                raise RuntimeError(f"API error: {error_msg}")
-                
-        except requests.exceptions.Timeout:
-            raise RuntimeError("Request timeout - mesh generation took too long")
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"Request failed: {e}")
-
-
-class SAM3MaskGenerator:
-    """Generate mask using SAM3 with bbox and optional text prompt"""
-    
-    def __init__(self):
-        self.model = None
-        self.processor = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    def load_model(self):
-        """Load SAM3 model (lazy loading)"""
-        if self.model is not None:
-            return
-        
-        print("\n🔧 Loading SAM3 model...")
-        from transformers import Sam3Processor, Sam3Model
-        
-        self.model = Sam3Model.from_pretrained("facebook/sam3").to(self.device)
-        self.processor = Sam3Processor.from_pretrained("facebook/sam3")
-        print(f"✓ SAM3 model loaded on {self.device}")
-    
-    def generate_mask(
+    def generate_from_array(
         self,
         image: np.ndarray,
-        bbox_xyxy: List[int],
-        text_prompt: Optional[str] = None,
-        mask_id: int = 0
-    ) -> np.ndarray:
+        text: Optional[str] = None,
+        bbox_xyxy: Optional[List[int]] = None,
+        mask: Optional[np.ndarray] = None,
+        output_format: str = 'ply',
+        mask_id: int = 0,
+        seed: int = 42
+    ) -> bytes:
         """
-        Generate mask using bbox and optional text prompt
+        Generate mesh from numpy array image
         
         Args:
             image: RGB image (H, W, 3)
+            text: Text description of object
             bbox_xyxy: Bounding box [x1, y1, x2, y2]
-            text_prompt: Optional text description
-            mask_id: Which mask to return (0 = highest score)
+            mask: Binary mask (H, W)
+            output_format: 'ply' or 'stl'
+            mask_id: Which mask to use if multiple detected
+            seed: Random seed
         
         Returns:
-            mask: Binary mask (H, W)
+            Mesh file content as bytes
         """
-        self.load_model()
+        # Convert bbox format if provided
+        bbox_xywh = None
+        if bbox_xyxy is not None:
+            x1, y1, x2, y2 = bbox_xyxy
+            bbox_xywh = [x1, y1, x2-x1, y2-y1]
         
-        # Convert to PIL Image
-        pil_image = Image.fromarray(image)
+        # Save image to temp file (required by mesh_client_example)
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+            img_path = tmp.name
+            Image.fromarray(image).save(img_path)
         
-        print(f"\n🎭 Generating mask with SAM3...")
-        print(f"   Bbox: {bbox_xyxy}")
-        if text_prompt:
-            print(f"   Prompt: '{text_prompt}'")
-        
-        # Prepare inputs
-        if text_prompt:
-            # Use both bbox and text
-            inputs = self.processor(
-                images=pil_image,
-                input_boxes=[[bbox_xyxy]],
-                input_boxes_labels=[[1]],
-                text=text_prompt,
-                return_tensors="pt"
-            ).to(self.device)
-        else:
-            # Use bbox only
-            inputs = self.processor(
-                images=pil_image,
-                input_boxes=[[bbox_xyxy]],
-                input_boxes_labels=[[1]],
-                return_tensors="pt"
-            ).to(self.device)
-        
-        # Run inference
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-        
-        # Post-process
-        results = self.processor.post_process_instance_segmentation(
-            outputs,
-            threshold=0.5,
-            mask_threshold=0.5,
-            target_sizes=inputs.get("original_sizes").tolist()
-        )[0]
-        
-        # Sort by scores
-        if "scores" in results and len(results["scores"]) > 0:
-            scores = results["scores"]
-            sorted_indices = torch.argsort(scores, descending=True)
-            masks = results["masks"][sorted_indices]
-            scores_sorted = results["scores"][sorted_indices]
+        try:
+            # Call the mesh generation API using the client function
+            result = generate_mesh(
+                api_url=self.api_url,
+                image_path=img_path,
+                text=text,
+                bbox_xywh=bbox_xywh,
+                output_format=output_format,
+                mask_id=mask_id,
+                seed=seed,
+                return_mask=False
+            )
             
-            print(f"✓ Found {len(masks)} masks with scores: {scores_sorted.tolist()}")
+            # Check result
+            if result['status'] != 'success':
+                raise RuntimeError(f"API error: {result.get('error', 'Unknown error')}")
             
-            if mask_id >= len(masks):
-                print(f"⚠️  Warning: mask_id {mask_id} >= {len(masks)}, using mask 0")
-                mask_id = 0
+            # Decode mesh file from base64
+            mesh_bytes = base64.b64decode(result['file_base64'])
             
-            # Convert to numpy
-            mask = masks[mask_id].cpu().numpy().astype(np.uint8) * 255
-            print(f"   Using mask {mask_id} (score: {scores_sorted[mask_id]:.3f})")
+            # Print stats
+            mesh_info = result['mesh_info']
+            print(f"\n✓ Mesh generated successfully")
+            if 'point_count' in mesh_info:
+                print(f"  Points: {mesh_info['point_count']:,}")
+            print(f"  Size: {mesh_info['file_size'] / 1024:.2f} KB")
+            print(f"  Mask score: {result['mask_score']:.3f}")
             
-            return mask
-        else:
-            raise RuntimeError("No masks generated by SAM3")
+            return mesh_bytes
+            
+        finally:
+            # Cleanup temp file
+            if os.path.exists(img_path):
+                os.unlink(img_path)
 
 
 class RealSenseCapture:
@@ -418,8 +324,8 @@ def main():
     parser.add_argument('--output', '-o', type=str, required=True,
                        help='Output mesh file path (e.g., model.ply)')
     
-    parser.add_argument('--api-url', type=str, default='http://localhost:5000',
-                       help='Mesh generation API URL (default: http://localhost:5000)')
+    parser.add_argument('--api-url', type=str, default='http://localhost:5001',
+                       help='Mesh generation API URL (default: http://localhost:5001)')
     
     parser.add_argument('--mask', type=str,
                        help='Path to existing mask file (skip interactive selection)')
@@ -433,11 +339,11 @@ def main():
     parser.add_argument('--mask-id', type=int, default=0,
                        help='Which mask to use if multiple detected (default: 0 = highest score)')
     
-    parser.add_argument('--width', type=int, default=640,
-                       help='Camera width (default: 640)')
+    parser.add_argument('--width', type=int, default=720,
+                       help='Camera width (default: 720)')
     
-    parser.add_argument('--height', type=int, default=480,
-                       help='Camera height (default: 480)')
+    parser.add_argument('--height', type=int, default=1280,
+                       help='Camera height (default: 1280)')
     
     parser.add_argument('--fps', type=int, default=30,
                        help='Camera FPS (default: 30)')
@@ -467,12 +373,16 @@ def main():
         rgb, depth = camera.capture_frame()
         print(f"✓ Frame captured: {rgb.shape}")
         
-        # Get or create mask
+        # Get mask or bbox
+        mask = None
+        bbox_xyxy = None
+        
         if args.mask:
+            # Use existing mask file
             print(f"\n🎭 Loading mask from: {args.mask}")
             mask = load_mask_from_file(args.mask)
         else:
-            # Get bounding box
+            # Get bounding box for API
             if args.bbox:
                 # Parse bbox from command line
                 try:
@@ -480,6 +390,8 @@ def main():
                     if len(bbox_xyxy) != 4:
                         raise ValueError("Bbox must have 4 values")
                     print(f"\n📦 Using bbox: {bbox_xyxy}")
+                    if args.prompt:
+                        print(f"   Text prompt: '{args.prompt}'")
                 except Exception as e:
                     print(f"\n✗ Invalid bbox format: {e}")
                     print("   Expected format: x1,y1,x2,y2")
@@ -492,27 +404,21 @@ def main():
                     print("\n✗ No bbox selected. Exiting.")
                     camera.stop()
                     return 1
-            
-            # Generate mask using SAM3
-            sam3 = SAM3MaskGenerator()
-            try:
-                mask = sam3.generate_mask(
-                    rgb,
-                    bbox_xyxy,
-                    text_prompt=args.prompt,
-                    mask_id=args.mask_id
-                )
-            except Exception as e:
-                print(f"\n✗ Failed to generate mask: {e}")
-                camera.stop()
-                return 1
+                if args.prompt:
+                    print(f"   Text prompt: '{args.prompt}'")
         
         # Save images if requested
         if args.save_images:
             save_dir = Path(args.save_images)
             save_dir.mkdir(parents=True, exist_ok=True)
             cv2.imwrite(str(save_dir / 'rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            cv2.imwrite(str(save_dir / 'mask.png'), mask)
+            if mask is not None:
+                cv2.imwrite(str(save_dir / 'mask.png'), mask)
+            if bbox_xyxy is not None:
+                # Draw bbox on image for debugging
+                debug_img = rgb.copy()
+                cv2.rectangle(debug_img, (bbox_xyxy[0], bbox_xyxy[1]), (bbox_xyxy[2], bbox_xyxy[3]), (0, 255, 0), 2)
+                cv2.imwrite(str(save_dir / 'rgb_with_bbox.png'), cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
             if not args.no_depth:
                 cv2.imwrite(str(save_dir / 'depth.png'), (depth / 16).astype(np.uint16))
             print(f"\n💾 Saved images to: {args.save_images}")
@@ -520,11 +426,15 @@ def main():
         # Stop camera
         camera.stop()
         
-        # Generate mesh
-        mesh_bytes = client.generate_mesh(
-            rgb, 
-            mask,
-            depth if not args.no_depth else None
+        # Generate mesh (API will handle SAM3/SAM3D internally)
+        mesh_bytes = client.generate_from_array(
+            image=rgb,
+            text=args.prompt,
+            bbox_xyxy=bbox_xyxy,
+            mask=mask,
+            output_format='ply',
+            mask_id=args.mask_id,
+            seed=42
         )
         
         # Save mesh file
