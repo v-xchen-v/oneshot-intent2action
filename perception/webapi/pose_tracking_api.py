@@ -23,6 +23,11 @@ from flask_cors import CORS
 import io
 from PIL import Image
 
+glcam_in_cvcam = np.array([[1,0,0,0],
+                          [0,-1,0,0],
+                          [0,0,-1,0],
+                          [0,0,0,1]]).astype(float)
+
 # Add the FoundationPose++ source to path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 foundationpose_src = os.path.join(project_root, "external/FoundationPose-plus-plus/src")
@@ -227,19 +232,23 @@ def create_session():
         if isinstance(mesh, trimesh.Scene):
             mesh = mesh.dump(concatenate=True)
         
-        # Apply scale
+        # Apply scale FIRST (matches obj_pose_track.py line 307-308)
         mesh_scale = data.get('mesh_scale', 0.01)
         mesh.apply_scale(mesh_scale)
         
         # Apply color if needed
         if data.get('force_apply_color', False):
-            # TODO: now is hard-code color here, parse in color by webapi input
             color = np.array(data.get('apply_color', [0, 159, 237]))
             mesh = trimesh_add_pure_colored_texture(mesh, color=color, resolution=10)
         
-        # Get mesh bounding box
+        # Get mesh bounding box AFTER scaling (matches obj_pose_track.py line 310-311)
         to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
         bbox = np.stack([-extents / 2, extents / 2], axis=0).reshape(2, 3)
+        bbox = bbox / mesh_scale  # Scale bbox back to original units
+        
+        print(f"DEBUG - bbox after scaling: {bbox}")
+        print(f"DEBUG - bbox extents: {bbox[1] - bbox[0]}")
+        print(f"DEBUG - to_origin:\n{to_origin}")
         
         # Camera intrinsics
         cam_K = np.array(data.get('cam_K'))
@@ -406,15 +415,26 @@ def track_frame(session_id: str):
         "rgb": "base64_encoded_rgb_image",
         "depth": "base64_encoded_depth_image",
         "depth_scale": 1000,
-        "visualize": false  # Return visualization image
+        "visualize": false,  # Return visualization image
+        "viz_mode": "pose"   # Visualization mode: "pose", "bbox", "mask", "all"
     }
     
     Returns:
     {
         "success": true,
-        "pose": {...},
+        "pose": {
+            "matrix": [[...]],  # 4x4 transformation matrix
+            "translation": [x, y, z],
+            "rotation_matrix": [[...]],
+            "quaternion": [x, y, z, w]
+        },
         "frame_count": N,
-        "visualization": "base64_image" (if visualize=true)
+        "bbox_2d": [x, y, w, h],  # 2D bounding box if tracker enabled
+        "visualizations": {
+            "pose": "base64_image",  # 3D mesh + bbox + axes overlay
+            "bbox": "base64_image",  # 2D bounding box overlay
+            "mask": "base64_image"   # Segmentation mask overlay
+        } (if visualize=true)
     }
     """
     try:
@@ -495,41 +515,95 @@ def track_frame(session_id: str):
             )
         
         session.frame_count += 1
-        session.pose_history.append(pose.reshape(4, 4))
+        pose_matrix = pose.reshape(4, 4)
+        session.pose_history.append(pose_matrix)
         
-        # Generate visualization if requested
-        vis_image = None
+        # Generate visualizations if requested
+        visualizations = {}
         if data.get('visualize', False):
-            center_pose = pose @ np.linalg.inv(session.to_origin)
-            vis_color = draw_posed_3d_box(
-                session.cam_K,
-                img=rgb,
-                ob_in_cam=center_pose,
-                bbox=session.bbox
-            )
-            vis_color = draw_xyz_axis(
-                vis_color,
-                ob_in_cam=center_pose,
-                scale=0.1,
-                K=session.cam_K,
-                thickness=3,
-                transparency=0,
-                is_input_rgb=True,
-            )
-            vis_image = encode_image(vis_color)
+            viz_mode = data.get('viz_mode', 'pose')
+            
+            # Convert pose to numpy for visualization
+            if torch.is_tensor(pose):
+                pose_np = pose.cpu().numpy()
+                if pose_np.ndim == 3:
+                    pose_np = pose_np[0]
+            else:
+                pose_np = pose.reshape(4, 4) if pose.ndim == 1 else pose
+            
+            # Apply to_origin transformation
+            center_pose = pose_np @ np.linalg.inv(session.to_origin)
+            
+            # Pose visualization (3D bbox + axes)
+            if viz_mode in ['pose', 'all']:
+                vis_pose = rgb.copy()
+                
+                # Debug: print bbox and pose info
+                print(f"DEBUG - bbox shape: {session.bbox.shape}, bbox:\n{session.bbox}")
+                print(f"DEBUG - center_pose:\n{center_pose}")
+                print(f"DEBUG - cam_K:\n{session.cam_K}")
+                
+                # Draw 3D bounding box with center_pose (matches obj_pose_track.py)
+                vis_pose = draw_posed_3d_box(
+                    session.cam_K,
+                    img=vis_pose,
+                    ob_in_cam=center_pose,
+                    bbox=session.bbox
+                )
+                # Draw coordinate axes
+                vis_pose = draw_xyz_axis(
+                    vis_pose,
+                    ob_in_cam=center_pose,
+                    scale=0.1,
+                    K=session.cam_K,
+                    thickness=3,
+                    transparency=0,
+                    is_input_rgb=True,
+                )
+                # Add frame info overlay
+                cv2.putText(vis_pose, f"Frame: {session.frame_count}", 
+                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                cv2.putText(vis_pose, f"Depth: {pose_matrix[2, 3]:.3f}m", 
+                           (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                visualizations['pose'] = encode_image(vis_pose)
+            
+            # Bounding box visualization (2D overlay)
+            if viz_mode in ['bbox', 'all'] and bbox_2d is not None:
+                vis_bbox = rgb.copy()
+                x, y, w, h = bbox_2d
+                cv2.rectangle(vis_bbox, (int(x), int(y)), (int(x+w), int(y+h)), 
+                             (0, 255, 0), 3)
+                cv2.putText(vis_bbox, f"Track: {session.frame_count}", 
+                           (int(x), int(y)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                visualizations['bbox'] = encode_image(vis_bbox)
+            
+            # Mask visualization (segmentation overlay)
+            if viz_mode in ['mask', 'all'] and session.tracker_2d is not None:
+                # Get current mask from 2D tracker if available
+                if hasattr(session.tracker_2d, 'get_mask'):
+                    try:
+                        mask = session.tracker_2d.get_mask()
+                        vis_mask = rgb.copy()
+                        # Create colored overlay
+                        mask_colored = np.zeros_like(rgb)
+                        mask_colored[mask > 0] = [0, 159, 237]  # Blue overlay
+                        vis_mask = cv2.addWeighted(vis_mask, 0.7, mask_colored, 0.3, 0)
+                        visualizations['mask'] = encode_image(vis_mask)
+                    except:
+                        pass  # Skip if mask not available
         
+        # Build comprehensive response
         response = {
             'success': True,
             'pose': pose_to_dict(pose),
             'frame_count': session.frame_count,
         }
         
-        if vis_image:
-            response['visualization'] = vis_image
-        
-        if bbox_2d:
-            # Convert numpy types to native Python types for JSON serialization
+        if bbox_2d is not None:
             response['bbox_2d'] = [int(x) for x in bbox_2d]
+        
+        if visualizations:
+            response['visualizations'] = visualizations
         
         return jsonify(response), 200
         

@@ -193,12 +193,13 @@ def test_webapi_tracking(
             rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
             depth = cv2.imread(str(depth_dir / depth_files[i]), -1)
             
-            # Track
+            # Track with all visualization types
             result = client.track(
                 rgb=rgb,
                 depth=depth,
                 depth_scale=1000.0,
-                visualize=visualize and output_dir is not None
+                visualize=visualize and output_dir is not None,
+                viz_mode='all'  # Request all visualization types
             )
             if result is None or not result.get('success'):
                 print(f"✗ Frame {i}: Tracking failed")
@@ -207,19 +208,36 @@ def test_webapi_tracking(
             pose = result['pose']
             poses.append(pose)
             
-            # Print progress
+            # Print progress with quality metrics
             if i % 10 == 0 or i == num_frames - 1:
-                print(f"  Frame {i:3d}/{num_frames}: t={pose['translation']}")
+                progress_str = f"  Frame {i:3d}/{num_frames}: t={pose['translation']}"
+                print(progress_str)
             
-            # Save visualization
-            if visualize and output_dir and 'visualization' in result:
+            # Save all visualization types
+            if visualize and output_dir and 'visualizations' in result:
                 import base64
                 from PIL import Image
                 import io
                 
-                vis_data = base64.b64decode(result['visualization'])
-                vis_img = Image.open(io.BytesIO(vis_data))
-                vis_img.save(os.path.join(output_dir, f'vis_{i:04d}.png'))
+                visualizations = result['visualizations']
+                
+                # Save pose visualization (3D bbox + axes)
+                if 'pose' in visualizations:
+                    vis_data = base64.b64decode(visualizations['pose'])
+                    vis_img = Image.open(io.BytesIO(vis_data))
+                    vis_img.save(os.path.join(output_dir, f'pose_vis_{i:04d}.png'))
+                
+                # Save bbox visualization (2D bounding box)
+                if 'bbox' in visualizations:
+                    vis_data = base64.b64decode(visualizations['bbox'])
+                    vis_img = Image.open(io.BytesIO(vis_data))
+                    vis_img.save(os.path.join(output_dir, f'bbox_vis_{i:04d}.png'))
+                
+                # Save mask visualization (segmentation overlay)
+                if 'mask' in visualizations:
+                    vis_data = base64.b64decode(visualizations['mask'])
+                    vis_img = Image.open(io.BytesIO(vis_data))
+                    vis_img.save(os.path.join(output_dir, f'mask_vis_{i:04d}.png'))
         
         print(f"✓ Tracked {len(poses)} frames successfully")
         
@@ -248,6 +266,15 @@ def test_webapi_tracking(
                         f.write(f"  Quaternion: {p['quaternion']}\n")
                         f.write("\n")
                 print(f"✓ Saved readable poses to: {txt_path}")
+                
+                # Print visualization summary
+                print(f"\n{'='*60}")
+                print("Visualization Summary:")
+                print(f"{'='*60}")
+                print(f"  pose_vis_*.png  - 3D mesh + bounding box + axes overlay")
+                print(f"  bbox_vis_*.png  - 2D bounding box overlay")
+                print(f"  mask_vis_*.png  - Segmentation mask overlay")
+                print(f"  Total frames: {len(poses)}")
         
         print(f"\n{'='*60}")
         print("Test completed successfully!")

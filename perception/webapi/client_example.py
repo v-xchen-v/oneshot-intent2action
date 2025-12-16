@@ -127,9 +127,18 @@ class PoseTrackingClient:
         rgb: np.ndarray,
         depth: np.ndarray,
         depth_scale: float = 1000.0,
-        visualize: bool = False
+        visualize: bool = False,
+        viz_mode: str = 'pose'
     ) -> Optional[dict]:
-        """Track object in new frame"""
+        """Track object in new frame
+        
+        Args:
+            rgb: RGB image (H, W, 3)
+            depth: Depth image (H, W)
+            depth_scale: Scale to convert depth to meters
+            visualize: Whether to request visualizations
+            viz_mode: Visualization mode - 'pose', 'bbox', 'mask', or 'all'
+        """
         
         if not self.session_id:
             print("No active session. Create a session first.")
@@ -139,7 +148,8 @@ class PoseTrackingClient:
             'rgb': self.encode_image(rgb),
             'depth': self.encode_image(depth),
             'depth_scale': depth_scale,
-            'visualize': visualize
+            'visualize': visualize,
+            'viz_mode': viz_mode
         }
         
         response = requests.post(
