@@ -21,6 +21,7 @@
 #   --intrinsics FILE      Camera intrinsics file (default: ../camera_calibration/cam_K.txt)
 #   --output-dir DIR       Output directory for all files (default: ./pipeline_output)
 #   --save-frames DIR      Save debug frames (optional)
+#   --mask-id NUM          Which mask to use if multiple detected (default: 0)
 #   --skip-mesh-gen        Skip mesh generation (use existing mesh in output-dir)
 #   --skip-mesh-scale      Skip mesh scaling (use existing scaled mesh in output-dir)
 #   --help                 Show this help message
@@ -28,13 +29,16 @@
 # Examples:
 #   # Basic usage with prompt
 #   ./track_pipe.sh --prompt "toy bear"
-#
 #   # Full example with all options
 #   ./track_pipe.sh --prompt "toy bear" \
 #       --mesh-api http://10.150.240.101:5001 \
 #       --track-api http://10.150.240.101:5000 \
 #       --save-frames ./debug_frames \
-#       --width 640 --height 480 --target-hz 10
+#       --width 640 --height 480 --target-hz 5 \
+#       --mask-id 0 \
+#       --skip-mesh-gen \
+#       --skip-mesh-scale
+#       --skip-mesh-scale
 #
 #   # With custom API servers
 #   ./track_pipe.sh --prompt "red mug" --mesh-api http://10.150.240.101:5001 --track-api http://10.150.240.101:5000
@@ -73,6 +77,7 @@ TARGET_HZ=5
 INTRINSICS="../camera_calibration/cam_K.txt"
 OUTPUT_DIR="./pipeline_output"
 SAVE_FRAMES=""
+MASK_ID=0
 SKIP_MESH_GEN=false
 SKIP_MESH_SCALE=false
 
@@ -117,6 +122,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --save-frames)
             SAVE_FRAMES="$2"
+            shift 2
+            ;;
+        --mask-id)
+            MASK_ID="$2"
             shift 2
             ;;
         --skip-mesh-gen)
@@ -188,7 +197,7 @@ else
     echo "STEP 1/3: Generate Mesh from RealSense Camera"
     echo -e "========================================================================${NC}"
 
-    GEN_MESH_CMD="python gen_mesh.py --output \"$RAW_MESH\" --save-mask \"$INITIAL_MASK\" --api-url \"$MESH_API_URL\" --width $WIDTH --height $HEIGHT --fps $FPS"
+    GEN_MESH_CMD="python gen_mesh.py --output \"$RAW_MESH\" --save-mask \"$INITIAL_MASK\" --api-url \"$MESH_API_URL\" --width $WIDTH --height $HEIGHT --fps $FPS --mask-id $MASK_ID"
 
     if [ -n "$PROMPT" ]; then
         GEN_MESH_CMD="$GEN_MESH_CMD --prompt \"$PROMPT\""
