@@ -162,6 +162,52 @@ def create_session():
     try:
         data = request.json
         
+        # Auto-close existing sessions to prevent device conflicts
+        if len(active_sessions) > 0:
+            sessions_to_close = list(active_sessions.keys())
+            for sid in sessions_to_close:
+                try:
+                    session = active_sessions[sid]
+                    # Clean up all session resources including models
+                    if hasattr(session, 'estimator') and session.estimator is not None:
+                        # Delete models owned by this estimator
+                        if hasattr(session.estimator, 'scorer'):
+                            del session.estimator.scorer
+                        if hasattr(session.estimator, 'refiner'):
+                            del session.estimator.refiner
+                        if hasattr(session.estimator, 'glctx'):
+                            del session.estimator.glctx
+                        # Clear estimator's internal tensors
+                        if hasattr(session.estimator, 'pts'):
+                            del session.estimator.pts
+                        if hasattr(session.estimator, 'normals'):
+                            del session.estimator.normals
+                        if hasattr(session.estimator, 'rot_grid'):
+                            del session.estimator.rot_grid
+                        if hasattr(session.estimator, 'mesh_tensors'):
+                            del session.estimator.mesh_tensors
+                        if hasattr(session.estimator, 'pose_last'):
+                            del session.estimator.pose_last
+                        del session.estimator
+                    
+                    if session.tracker_2d and not isinstance(session.tracker_2d, Tracker_2D):
+                        # Delete Cutie tracker
+                        del session.tracker_2d
+                    if session.kalman_filter:
+                        del session.kalman_filter
+                    del active_sessions[sid]
+                except Exception as e:
+                    print(f"Warning: Failed to close session {sid}: {e}")
+            
+            # Force garbage collection and clear CUDA cache multiple times
+            import gc
+            for _ in range(3):
+                gc.collect()
+            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.ipc_collect()
+        
         # Generate unique session ID
         session_id = str(uuid.uuid4())
         
@@ -198,18 +244,34 @@ def create_session():
         # Camera intrinsics
         cam_K = np.array(data.get('cam_K'))
         
-        # Initialize FoundationPose estimator
-        scorer = ScorePredictor()
-        refiner = PoseRefinePredictor()
-        glctx = dr.RasterizeCudaContext()
-        estimator = FoundationPose(
-            model_pts=mesh.vertices,
-            model_normals=mesh.vertex_normals,
-            mesh=mesh,
-            scorer=scorer,
-            refiner=refiner,
-            glctx=glctx,
-        )
+        # Ensure we're using the correct CUDA device and set default tensor type
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)
+            torch.cuda.empty_cache()
+        
+        # Set default tensor type to CUDA to ensure all tensors are created on GPU
+        original_type = torch.get_default_dtype()
+        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        
+        try:
+            # Create fresh model instances for each session
+            with torch.cuda.device(0):
+                scorer = ScorePredictor()
+                refiner = PoseRefinePredictor()
+                glctx = dr.RasterizeCudaContext()
+                
+                # Initialize FoundationPose estimator
+                estimator = FoundationPose(
+                    model_pts=mesh.vertices,
+                    model_normals=mesh.vertex_normals,
+                    mesh=mesh,
+                    scorer=scorer,
+                    refiner=refiner,
+                    glctx=glctx,
+                )
+        finally:
+            # Always reset default tensor type
+            torch.set_default_tensor_type('torch.FloatTensor')
         
         # Initialize 2D tracker
         tracker_2d = None
