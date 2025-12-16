@@ -1,0 +1,10 @@
+flask
+flask-cors
+numpy
+opencv-python
+torch
+trimesh
+scipy
+Pillow
+requests
+imageio

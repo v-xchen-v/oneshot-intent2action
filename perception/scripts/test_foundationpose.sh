@@ -17,9 +17,11 @@ python src/obj_pose_track.py \
 --activate_2d_tracker \
 --apply_scale 0.01 \
 --est_refine_iter 10 \
---track_refine_iter 3 \
---force_apply_color \
---apply_color "[0, 159, 237]"
+--track_refine_iter 3
+
+# --force_apply_color \
+# --apply_color "[0, 159, 237]"
+
 # should disable these two arguments, otherwise, it will got a bad tracker in test case
 # --activate_kalman_filter \
 # --kf_measurement_noise_scale 0.05 \
