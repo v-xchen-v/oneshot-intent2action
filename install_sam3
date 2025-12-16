@@ -1,0 +1,4 @@
+python3.10+
+transformers==5.0.0rc0
+pip install torch torchvision
+pip install matplotlib
