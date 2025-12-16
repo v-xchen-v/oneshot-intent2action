@@ -15,17 +15,23 @@ Usage Examples:
     # Interactive bbox only (no text prompt)
     python gen_mesh.py --output model.ply
 
+    # Save generated mask from API response
+    python gen_mesh.py --prompt "toy bear" --output model.ply --save-mask mask.png
+
     # Use existing mask file
     python gen_mesh.py --mask path/to/mask.png --output model.ply
 
     # Specify API server and object description (mesh API runs on port 5001)
-    python gen_mesh.py --api-url http://10.150.240.101:5001 --prompt "black mug" --output model.ply
+    python gen_mesh.py --api-url http://10.150.240.101:5001 --prompt "black mug" --output model.ply --save-mask mask.png
 
     # Custom camera resolution with prompt
     python gen_mesh.py --width 1280 --height 720 --prompt "cup" --output model.ply
 
     # Save captured images for debugging
     python gen_mesh.py --save-images ./debug_images --prompt "bottle" --output model.ply
+    
+    # Complete example with all options
+    python gen_mesh.py --prompt "object" --output model.ply --save-mask mask.png --save-images ./debug
 """
 
 import pyrealsense2 as rs
@@ -36,6 +42,7 @@ import sys
 import os
 import base64
 import tempfile
+import io
 from pathlib import Path
 from typing import Optional, Tuple, List
 from PIL import Image
@@ -83,8 +90,9 @@ class MeshGenerationClient:
         mask: Optional[np.ndarray] = None,
         output_format: str = 'ply',
         mask_id: int = 0,
-        seed: int = 42
-    ) -> bytes:
+        seed: int = 42,
+        return_mask: bool = True
+    ) -> Tuple[bytes, Optional[np.ndarray]]:
         """
         Generate mesh from numpy array image
         
@@ -96,9 +104,10 @@ class MeshGenerationClient:
             output_format: 'ply' or 'stl'
             mask_id: Which mask to use if multiple detected
             seed: Random seed
+            return_mask: Whether to return the generated mask
         
         Returns:
-            Mesh file content as bytes
+            Tuple of (mesh_bytes, mask_array)
         """
         # Convert bbox format if provided
         bbox_xywh = None
@@ -121,7 +130,7 @@ class MeshGenerationClient:
                 output_format=output_format,
                 mask_id=mask_id,
                 seed=seed,
-                return_mask=False
+                return_mask=return_mask
             )
             
             # Check result
@@ -131,6 +140,14 @@ class MeshGenerationClient:
             # Decode mesh file from base64
             mesh_bytes = base64.b64decode(result['file_base64'])
             
+            # Decode mask if available
+            mask_array = None
+            if return_mask and 'mask_base64' in result:
+                mask_b64 = result['mask_base64']
+                mask_bytes = base64.b64decode(mask_b64)
+                mask_img = Image.open(io.BytesIO(mask_bytes))
+                mask_array = np.array(mask_img)
+            
             # Print stats
             mesh_info = result['mesh_info']
             print(f"\n✓ Mesh generated successfully")
@@ -139,7 +156,7 @@ class MeshGenerationClient:
             print(f"  Size: {mesh_info['file_size'] / 1024:.2f} KB")
             print(f"  Mask score: {result['mask_score']:.3f}")
             
-            return mesh_bytes
+            return mesh_bytes, mask_array
             
         finally:
             # Cleanup temp file
@@ -339,20 +356,19 @@ def main():
     parser.add_argument('--mask-id', type=int, default=0,
                        help='Which mask to use if multiple detected (default: 0 = highest score)')
     
-    parser.add_argument('--width', type=int, default=720,
-                       help='Camera width (default: 720)')
+    parser.add_argument('--width', type=int, default=1280,
+                       help='Camera width (default: 1280)')
     
-    parser.add_argument('--height', type=int, default=1280,
-                       help='Camera height (default: 1280)')
+    parser.add_argument('--height', type=int, default=720,
+                       help='Camera height (default: 720)')
     
     parser.add_argument('--fps', type=int, default=30,
                        help='Camera FPS (default: 30)')
-    
-    parser.add_argument('--save-images', type=str,
-                       help='Directory to save captured images for debugging')
-    
     parser.add_argument('--no-depth', action='store_true',
                        help='Do not send depth data (RGB + mask only)')
+    
+    parser.add_argument('--save-mask', type=str,
+                       help='Path to save generated mask image from API')
     
     args = parser.parse_args()
     
@@ -407,34 +423,32 @@ def main():
                 if args.prompt:
                     print(f"   Text prompt: '{args.prompt}'")
         
-        # Save images if requested
-        if args.save_images:
-            save_dir = Path(args.save_images)
-            save_dir.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(save_dir / 'rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
-            if mask is not None:
-                cv2.imwrite(str(save_dir / 'mask.png'), mask)
-            if bbox_xyxy is not None:
-                # Draw bbox on image for debugging
-                debug_img = rgb.copy()
-                cv2.rectangle(debug_img, (bbox_xyxy[0], bbox_xyxy[1]), (bbox_xyxy[2], bbox_xyxy[3]), (0, 255, 0), 2)
-                cv2.imwrite(str(save_dir / 'rgb_with_bbox.png'), cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
-            if not args.no_depth:
-                cv2.imwrite(str(save_dir / 'depth.png'), (depth / 16).astype(np.uint16))
-            print(f"\n💾 Saved images to: {args.save_images}")
-        
-        # Stop camera
-        camera.stop()
+        # # Save images if requested
+        # if args.save_images:
+        #     save_dir = Path(args.save_images)
+        #     save_dir.mkdir(parents=True, exist_ok=True)
+        #     cv2.imwrite(str(save_dir / 'rgb.png'), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        #     if mask is not None:
+        #         cv2.imwrite(str(save_dir / 'mask.png'), mask)
+        #     if bbox_xyxy is not None:
+        #         # Draw bbox on image for debugging
+        #         debug_img = rgb.copy()
+        #         cv2.rectangle(debug_img, (bbox_xyxy[0], bbox_xyxy[1]), (bbox_xyxy[2], bbox_xyxy[3]), (0, 255, 0), 2)
+        #         cv2.imwrite(str(save_dir / 'rgb_with_bbox.png'), cv2.cvtColor(debug_img, cv2.COLOR_RGB2BGR))
+        #     if not args.no_depth:
+        #         cv2.imwrite(str(save_dir / 'depth.png'), (depth / 16).astype(np.uint16))
+        #     print(f"\n💾 Saved images to: {args.save_images}")
         
         # Generate mesh (API will handle SAM3/SAM3D internally)
-        mesh_bytes = client.generate_from_array(
+        mesh_bytes, generated_mask = client.generate_from_array(
             image=rgb,
             text=args.prompt,
             bbox_xyxy=bbox_xyxy,
             mask=mask,
             output_format='ply',
             mask_id=args.mask_id,
-            seed=42
+            seed=42,
+            return_mask=bool(args.save_mask)
         )
         
         # Save mesh file
@@ -445,8 +459,18 @@ def main():
         print(f"\n💾 Mesh saved to: {args.output}")
         print(f"   Size: {len(mesh_bytes) / 1024:.2f} KB")
         
+        # Save generated mask if requested and available
+        # Save generated mask if requested and available
+        if args.save_mask and generated_mask is not None:
+            mask_path = Path(args.save_mask)
+            mask_path.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(mask_path), generated_mask)
+            print(f"💾 Mask saved to: {args.save_mask}")
+        
+        # Stop camera
+        camera.stop()
+        
         print("\n" + "="*70)
-        print("✅ SUCCESS!")
         print("="*70)
         print(f"\nYou can view the mesh in:")
         print("  • CloudCompare")
