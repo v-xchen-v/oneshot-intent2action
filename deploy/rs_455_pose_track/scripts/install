@@ -1,0 +1,3 @@
+conda create -n oneshot-intent2action-deploy python=3.10
+pip install pyrealsense2
+pip install numpy
