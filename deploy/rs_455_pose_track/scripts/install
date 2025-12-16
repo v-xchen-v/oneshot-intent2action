@@ -1,3 +1,7 @@
 conda create -n oneshot-intent2action-deploy python=3.10
 pip install pyrealsense2
 pip install numpy
+pip install opencv-python
+pip install requests
+pip install pillow
+pip instal torch torchvision
