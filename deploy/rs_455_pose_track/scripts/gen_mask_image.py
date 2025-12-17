@@ -9,14 +9,14 @@ This script:
 4. Saves mask image
 
 Usage Examples:
+    # Specify API server
+    python gen_mask_image.py --api-url http://10.150.240.101:5001 --prompt "black mug" --output mask.png
+    
     # Interactive bbox selection
     python gen_mask_image.py --output mask.png
 
     # With text prompt
     python gen_mask_image.py --prompt "toy bear" --output mask.png
-
-    # Specify API server
-    python gen_mask_image.py --api-url http://10.150.240.101:5001 --prompt "black mug" --output mask.png
 
     # Custom camera resolution
     python gen_mask_image.py --width 640 --height 480 --prompt "cup" --output mask.png
