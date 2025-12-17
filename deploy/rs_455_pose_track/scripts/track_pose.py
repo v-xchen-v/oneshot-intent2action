@@ -11,11 +11,10 @@ This script performs real-time 6D pose tracking by:
 
 Usage:
     # Interactive initialization with bbox
-    python track_pose.py --mesh scaled.stl \
+    python track_pose.py --mesh ../mesh/black_mug/scaled.stl \
         --api-url http://10.150.240.101:5000 \
-        --mask initial_mask.png \
-        --intrinsics ../camera_calibration/cam_K.txt \
-        --width 1280 --height 720 --fps 30 \
+        --mask \mask.png \
+        --width 640 --height 480 --fps 30 \
         --target-hz 5 \
         --save-frames ./debug_frames
     
@@ -47,9 +46,12 @@ import sys
 import os
 import json
 import time
+import base64
+import io
 from pathlib import Path
 from typing import Optional, Tuple
 from collections import deque
+from PIL import Image
 
 # Import the official client
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../perception/webapi'))
@@ -184,7 +186,7 @@ def draw_pose_overlay(image: np.ndarray, pose_dict: dict, cam_K: np.ndarray,
     
     # Get pose matrix
     pose_matrix = np.array(pose_dict['matrix'])
-    
+
     # Define axis points in object frame
     origin = np.array([0, 0, 0, 1])
     x_axis = np.array([axis_length, 0, 0, 1])
@@ -286,7 +288,7 @@ def main():
     if args.save_frames:
         save_frames_dir = Path(args.save_frames)
         save_frames_dir.mkdir(parents=True, exist_ok=True)
-        (save_frames_dir / "rgb").mkdir(exist_ok=True)
+        (save_frames_dir / "color").mkdir(exist_ok=True)
         (save_frames_dir / "depth").mkdir(exist_ok=True)
         print(f"📁 Saving frames to: {save_frames_dir}")
     
@@ -312,13 +314,13 @@ def main():
         print(f"❌ Failed to start camera: {e}")
         return 1
     
-    # Get camera intrinsics
-    if args.intrinsics:
-        print(f"\n📐 Loading camera intrinsics from: {args.intrinsics}")
-        cam_K = load_intrinsics_from_file(args.intrinsics)
-    else:
-        print(f"\n📐 Using camera intrinsics from RealSense")
-        cam_K = camera.get_intrinsics_matrix()
+    # # Get camera intrinsics
+    # if args.intrinsics:
+    #     print(f"\n📐 Loading camera intrinsics from: {args.intrinsics}")
+    #     cam_K = load_intrinsics_from_file(args.intrinsics)
+    # else:
+    print(f"\n📐 Using camera intrinsics from RealSense")
+    cam_K = camera.get_intrinsics_matrix()
     
     print(f"Camera K matrix:\n{cam_K}")
     
@@ -343,11 +345,11 @@ def main():
         success = client.create_session(
             mesh_path=args.mesh,
             cam_K=cam_K,
-            mesh_scale=args.mesh_scale,
+            mesh_scale=1.0,
             est_refine_iter=10,
             track_refine_iter=3,
             activate_2d_tracker=True,
-            activate_kalman_filter=True,
+            activate_kalman_filter=False,
             kf_measurement_noise_scale=0.05
         )
         if not success:
@@ -386,12 +388,17 @@ def main():
     if args.mask and os.path.exists(args.mask):
         print(f"Loading mask from: {args.mask}")
         mask = cv2.imread(args.mask, cv2.IMREAD_GRAYSCALE)
-    else:
-        bbox = interactive_bbox_selection(rgb)
-        if bbox is None:
-            camera.stop()
-            return 1
-        mask = bbox_to_mask(bbox, rgb.shape)
+    else: 
+        # No mask provided, exit with error
+        print(f"❌ No initial mask provided. Please provide --mask argument with valid mask image.")
+        camera.stop()
+        return 1
+    # else:
+    #     bbox = interactive_bbox_selection(rgb)
+    #     if bbox is None:
+    #         camera.stop()
+    #         return 1
+    #     mask = bbox_to_mask(bbox, rgb.shape)
     
     # Initialize tracking
     print(f"\n🎯 Initializing tracking...")
@@ -440,6 +447,12 @@ def main():
     target_frame_interval = 1.0 / args.target_hz if args.target_hz else 0
     last_track_time = time.time()
     
+    if args.save_frames:
+        # save mask to the directory
+        mask_path = save_frames_dir / "0_mask.png"
+        cv2.imwrite(str(mask_path), mask)
+        print(f"✓ Saved initial mask to: {mask_path}")
+    
     try:
         while True:
             if not paused:
@@ -466,9 +479,24 @@ def main():
                 # Track pose (disable visualize for better performance)
                 try:
                     track_start = time.time()
-                    result = client.track(rgb, depth, depth_scale=1000.0, visualize=False)
+                    return_vis = True
+                    result = client.track(rgb, depth, depth_scale=1000.0, visualize=return_vis)
                     track_time = time.time() - track_start
                     track_times.append(track_time * 1000)  # ms
+                    
+                    
+                    if return_vis:
+                        # "visualizations": {
+                        #     "pose": "base64_image",  # 3D mesh + bbox + axes overlay
+                        #     "bbox": "base64_image",  # 2D bounding box overlay
+                        #     "mask": "base64_image"   # Segmentation mask overlay
+                        # } (if visualize=true)
+                        pose_vis_b64 = result.get('visualizations', {}).get('pose')
+                        if pose_vis_b64:
+                            vis_bytes = base64.b64decode(pose_vis_b64)
+                            vis_image = np.array(Image.open(io.BytesIO(vis_bytes)))
+                            
+
                     
                     if not result:
                         raise Exception("Track returned None")
@@ -478,7 +506,7 @@ def main():
                     if not pose:
                         raise Exception("No pose in result")
                     
-                    vis_image = draw_pose_overlay(rgb, pose, cam_K)
+                    # vis_image = draw_pose_overlay(rgb, pose, cam_K)
                     
                     # Calculate actual FPS
                     current_time = time.time()
@@ -528,8 +556,8 @@ def main():
                     
                     # Save frames for debugging
                     if save_frames_dir:
-                        rgb_path = save_frames_dir / "rgb" / f"frame_{frame_count:06d}.png"
-                        depth_path = save_frames_dir / "depth" / f"frame_{frame_count:06d}.png"
+                        rgb_path = save_frames_dir / "color" / f"{frame_count}.png"
+                        depth_path = save_frames_dir / "depth" / f"{frame_count}.png"
                         cv2.imwrite(str(rgb_path), rgb)
                         # Save depth as 16-bit PNG
                         cv2.imwrite(str(depth_path), depth)
@@ -588,7 +616,7 @@ def main():
         print(f"📊 Average capture time: {avg_capture:.1f}ms")
         if save_frames_dir:
             print(f"📁 Frames saved to: {save_frames_dir}")
-            print(f"   RGB images: {save_frames_dir / 'rgb'}")
+            print(f"   RGB images: {save_frames_dir / 'color'}")
             print(f"   Depth images: {save_frames_dir / 'depth'}")
         print("="*70)
         print("Done!")
